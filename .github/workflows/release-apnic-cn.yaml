@@ -1,0 +1,69 @@
+name: Release APNIC CN Ruleset
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install sing-box
+        run: |
+          set -eux
+
+          TAG="$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r '.tag_name')"
+          VERSION="${TAG#v}"
+
+          curl -fsSLo sing-box.tar.gz \
+            "https://github.com/SagerNet/sing-box/releases/download/${TAG}/sing-box-${VERSION}-linux-amd64.tar.gz"
+
+          tar -xzf sing-box.tar.gz
+
+          sudo install -m 0755 \
+            "sing-box-${VERSION}-linux-amd64/sing-box" \
+            /usr/local/bin/sing-box
+
+          sing-box version
+      - name: Build source ruleset
+        run: |
+          mkdir rule-set
+          python3 ../build-apnic-cn.py
+      - name: Compile SRS
+        run: |
+          sing-box rule-set compile \
+            --output rule-set/apnic-cn.srs \
+            rule-set/apnic-cn.json
+
+      - name: Validate output
+        run: |
+          test -s rule-set/apnic-cn.json
+          test -s rule-set/apnic-cn.srs
+
+          ls -lh rule-set/apnic-cn.json rule-set/apnic-cn.srs
+
+          size="$(stat -c%s rule-set/apnic-cn.srs)"
+          if [ "$size" -gt 20000000 ]; then
+            echo "::error::rule-set/apnic-cn.srs is larger than 20 MB. jsDelivr GitHub endpoint may not support it by default."
+            exit 1
+          fi
+
+      - name: Generate sha256 hash
+        if: steps.build.outputs.skip != 'true'
+        run: |
+          sha256sum rule-set/apnic-cn.json > rule-set/apnic-cn.json.sha256sum
+          sha256sum rule-set/apnic-cn.srs > rule-set/apnic-cn.srs.sha256sum
+
+      - name: Release rule sets
+        if: steps.build.outputs.skip != 'true'
+        run: .github/release-rule-set.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
